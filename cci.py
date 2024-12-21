@@ -18,24 +18,28 @@ MUST_EXISTS_INSTALLER=[
     "elasticloadbalancing:AddTags",
 
     # required by create manifests
-    "ec2:DescribeInstanceTypeOfferings", # skipped on CI as it enforces type
+    "ec2:DescribeInstanceTypeOfferings",
 
     # required by create cluster
     "iam:TagRole",
     "iam:TagInstanceProfile",
+
+    # required by create cluster
+    # Required, but nice to have without start (use conditionals)
+    # StringEquals: {"iam:PassedToService": "ec2.amazonaws.com"}
     "iam:PassRole",
 
     # required by CAPA
     "s3:PutObject",
     "ec2:GetConsoleOutput",
 
-    # by destroy
+    # required by destroy
     "tag:GetResources",
     "s3:ListBucket",
     "s3:DeleteObject",
     "s3:ListBucketVersions",
 
-    # uncaught but making bootstrap to fail:
+    # uncaught but making bootstrap to fail (needs refinement):
     "s3:CreateBucket",
     "s3:GetAccelerateConfiguration",
     "s3:GetBucketAcl",
@@ -51,7 +55,6 @@ MUST_EXISTS_INSTALLER=[
     "s3:GetEncryptionConfiguration",
     "s3:GetLifecycleConfiguration",
     "s3:GetReplicationConfiguration",
-    "s3:ListBucket",
     "s3:PutBucketAcl",
     "s3:PutBucketPolicy",
     "s3:PutBucketTagging",
@@ -60,16 +63,12 @@ MUST_EXISTS_INSTALLER=[
     "s3:GetObjectAcl",
     "s3:GetObjectTagging",
     "s3:GetObjectVersion",
-    "s3:PutObject",
     "s3:PutObjectAcl",
     "s3:PutObjectTagging",
-
-    # Operator's has failed
-    "iam:PassRole", # I
 ]
 
 #
-# Enforced permissions which isn't a log event on CloudTrail
+# TODO: Enforced permissions which isn't a log event on CloudTrail
 #
 MUST_EXISTS_BY_SECRET_REF={
     "openshift-machine-api/aws-cloud-credentials": [
@@ -82,7 +81,7 @@ MUST_EXISTS_BY_SECRET_REF={
 #
 # Alerts
 #
-ALERT_MSG_PERMISSION_WILDCARD="with start is not recommended. Use descritive permissions instead. Example: ec2:DescribeInstances instead of ec2:Describe*"
+ALERT_MSG_PERMISSION_WILDCARD="with star is not recommended. Use descritive permissions instead. Example: ec2:DescribeInstances instead of ec2:Describe*"
 ALERT_MSG_IAM_PASS_ROLE="iam:PassRole With Star In Resource: Using the iam:PassRole action with wildcards (*) in the resource can be overly permissive because it allows iam:PassRole permissions on multiple resources. We recommend that you specify resource ARNs or add the iam:PassedToService condition key to your statement.\
 Learn more: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-reference-policy-checks.html#access-analyzer-reference-policy-checks-security-warning-pass-role-with-star-in-resource"
 
@@ -127,6 +126,7 @@ class Events(object):
                 self.iam_events[principal_id]['creates'] = []
             self.iam_events[principal_id]['creates'].append(creates)
         return
+
 
 class CloudCredentialsReport(object):
     """
@@ -383,7 +383,7 @@ class CloudCredentialsRequests(CloudCredentialsReport):
         }
 
     def load_events(self, events_path):
-        print("Loading IAM events....")
+        print("Loading IAM events...")
         with open(events_path, 'r') as f:
             self.events.iam_events = json.load(f)
         print(f"IAM user loaded ({len(self.events.iam_events.keys())}): {list(self.events.iam_events.keys())}")
@@ -583,6 +583,15 @@ class CloudCredentialsRequests(CloudCredentialsReport):
             for action in self.compiled_users['users'][principal]['required']:
                 if action not in self.compiled_users['users'][principal]['requested']:
                     self.compiled_users['users'][principal]['diff']['missing'].append(action)
+
+                # check if the action has case issues
+                # TODO improve the lookup
+                for action_req in self.compiled_users['users'][principal]['requested']:
+                    if action_req.lower() == action.lower():
+                        if 'alert_similar' not in self.compiled_users['users'][principal]['diff']:
+                            self.compiled_users['users'][principal]['diff']['alert_similar'] = []
+                        self.compiled_users['users'][principal]['diff']['alert_similar'].append(action)
+
         return
 
     def save(self):
