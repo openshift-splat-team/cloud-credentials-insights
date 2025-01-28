@@ -85,6 +85,7 @@ ALERT_MSG_PERMISSION_WILDCARD="with star is not recommended. Use descritive perm
 ALERT_MSG_IAM_PASS_ROLE="iam:PassRole With Star In Resource: Using the iam:PassRole action with wildcards (*) in the resource can be overly permissive because it allows iam:PassRole permissions on multiple resources. We recommend that you specify resource ARNs or add the iam:PassedToService condition key to your statement.\
 Learn more: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-reference-policy-checks.html#access-analyzer-reference-policy-checks-security-warning-pass-role-with-star-in-resource"
 
+
 class Events(object):
     """
     Store the Principal and Event information.
@@ -130,7 +131,9 @@ class Events(object):
 
 class CloudCredentialsReport(object):
     """
-    Parse the CloudTrail or Azure Monitor logs to extract Principal and Event information.
+    The `CloudCredentialsReport` class is responsible for parsing the CloudTrail or Azure Monitor Logs
+    and extracting Principal and Event information. It has methods to set the installer user name and
+    policy from command line arguments, create filters, parse the log files, and post-process the events data.
     """
     def __init__(self, output_dir, filters=None, args=None):
         self.output_dir = output_dir
@@ -142,9 +145,15 @@ class CloudCredentialsReport(object):
         self.installer_user_name = None
         self.installer_user_policy = None
 
-        self.set_from_args(args)
+        self.update_from_args(args)
 
-    def set_from_args(self, args):
+    def update_from_args(self, args):
+        """
+        Updates the installer user name and policy from command line arguments.
+
+        Parameters:
+        args (argparse.Namespace): Command line arguments.
+        """
         if args == None:
             return
         if args.installer_user_name is not None:
@@ -156,7 +165,18 @@ class CloudCredentialsReport(object):
     def create_filters(self, filters):
         """
         Filters are key values with '=' delimiator, with command sepparated for each filter.
-        Example: filter1=value,filter2=value
+        Example:
+
+        Create filters from command line arguments.
+
+        Parameters:
+        filters (str): Filters to apply to the events data, can accept delimiator '='.
+
+        Returns:
+        dict: Filters to apply to the events data.
+
+        Example:
+        filter1=value,filter2=value
         """
         if filters is None:
             return None
@@ -167,16 +187,21 @@ class CloudCredentialsReport(object):
         return finalFilters
 
     def parse_events(self, event_path):
-        # Discover all the log files paths
+        """
+        Parse the CloudTrail or Azure Monitor logs to extract Principal and Event information.
+
+        Parameters:
+        event_path (str): Path to the event files.
+
+        Returns:
+        dict: Statistics of the processed files.
+        """
         log_files = glob.glob(os.path.join(event_path, '**/*.json.gz'), recursive=True)
         log_files += glob.glob(os.path.join(event_path, '**/*.json'), recursive=True)
-        # print(log_files)
         for log_file in log_files:
             data = ''
             cloud_provider="TBD"
-            # print(f'Processing {log_file}')
             if log_file.endswith('.json.gz'):
-                # print(f'Processing .json.gz')
                 with gzip.open(log_file, 'rb') as f:
                     compressed_content = f.read()
                     # decompressed_content = gzip.decompress(compressed_content)
@@ -190,7 +215,6 @@ class CloudCredentialsReport(object):
                     }
                     for line in f.readlines():
                         data['events'].append(json.loads(line))
-                    # data = json.loads(f.read())
 
             # Discover the cloud provider
             ## AWS
@@ -203,30 +227,30 @@ class CloudCredentialsReport(object):
                 continue
 
             # Parse the log file
-            pfile = {
+            parsed_file = {
                 'file': log_file,
                 'cloud_provider': cloud_provider,
             }
             if cloud_provider == 'AWS':
-                res = self.parse_aws(data)
+                result_data = self.parse_aws(data)
             elif cloud_provider == 'Azure':
-                res = self.parse_azure(data)
+                result_data = self.parse_azure(data)
             else:
-                pfile['result'] = 'error'
-                pfile['error'] = 'Unknown cloud provider'
-                self.processed_files.append(pfile)
+                parsed_file['result'] = 'error'
+                parsed_file['error'] = 'Unknown cloud provider'
+                self.processed_files.append(parsed_file)
                 log.Error(f'Unknown cloud provider for {log_file}')
                 continue
 
-            pfile['result'] = 'success'
-            if res:
-                pfile['result'] = 'success'
-                pfile['stat'] = {
-                    'total': res['total'],
-                    'processed': res['processed'],
-                    'skipped': res['skipped'],
+            parsed_file['result'] = 'success'
+            if result_data:
+                parsed_file['result'] = 'success'
+                parsed_file['stat'] = {
+                    'total': result_data['total'],
+                    'processed': result_data['processed'],
+                    'skipped': result_data['skipped'],
                 }
-            self.processed_files.append(pfile)
+            self.processed_files.append(parsed_file)
 
         self.post_processor()
         return
@@ -234,6 +258,12 @@ class CloudCredentialsReport(object):
     def parse_aws(self, data):
         """
         Parse the CloudTrail log data to extract Principal and Event information.
+
+        Parameters:
+        data (dict): CloudTrail log data.
+
+        Returns:
+        dict: Statistics of the processed files.
         """
         res = {
             'total': 0,
@@ -248,7 +278,7 @@ class CloudCredentialsReport(object):
                 # Check if userIdentity.UserName prefixes with cluster_name
                 user_id = event['userIdentity'].get('userName', '')
                 # Extract the eventSource and eventName
-                event_id = (f"{event.get('eventSource', '').replace('.amazonaws.com', '')}:{event.get('eventName', '')}")
+                permission_name = (f"{event.get('eventSource', '').replace('.amazonaws.com', '')}:{event.get('eventName', '')}")
                 event_params = ''
                 if 'requestParameters' in event:
                     event_params = event['requestParameters']
@@ -258,18 +288,18 @@ class CloudCredentialsReport(object):
 
                 # Process specific events
                 creates = None
-                if event_id == "iam:CreateUser" and event_params.get('userName', None):
+                if permission_name == "iam:CreateUser" and event_params.get('userName', None):
                     creates = event_params.get('userName', None)
-                self.events.insert_event(user_id, event_id, event_params=event_params, creates=creates)
+                self.events.insert_event(user_id, permission_name, event_params=event_params, creates=creates)
 
             # Group by AssumedRole type
             elif user_type in ['AssumedRole']:
                 # role_name = event['userIdentity'].get('arn', '')
                 user_id = event['userIdentity'].get('sessionContext', {}).get('sessionIssuer', {}).get('userName', '')
-                event_id = (f"{event.get('eventSource', '').replace('.amazonaws.com', '')}:{event.get('eventName', '')}")
+                permission_name = (f"{event.get('eventSource', '').replace('.amazonaws.com', '')}:{event.get('eventName', '')}")
 
                 self.events.insert_principal("AWS", user_id, user_type)
-                self.events.insert_event(user_id, event_id)
+                self.events.insert_event(user_id, permission_name)
             
             else:
                 res['skipped'] += 1
@@ -281,6 +311,12 @@ class CloudCredentialsReport(object):
     def parse_azure(self, data):
         """
         Parse the Azure log data to extract Principal and Event information.
+
+        Parameters:
+        data (dict): Azure log data.
+
+        Returns:
+        dict: Statistics of the processed files.
         """
         res = {
             'total': 0,
@@ -296,17 +332,17 @@ class CloudCredentialsReport(object):
             # Check if userIdentity
             operationName = event.get('operationName', '')
             action = event.get('identity', {}).get('authorization', {}).get('action', '')
-            event_id = action
+            permission_name = action
             # evemt_params = event.get('parameters', {})
 
             principal_type = event.get('identity', {}).get('authorization', {}).get('evidence', {}).get('principalType', '')
             principal_id = event.get('identity', {}).get('authorization', {}).get('evidence', {}).get('principalId', '')
 
-            if event_id == "":
-                event_id = operationName
+            if permission_name == "":
+                permission_name = operationName
 
             self.events.insert_principal("Azure", principal_id, principal_type)
-            self.events.insert_event(principal_id, event_id, event_params={})
+            self.events.insert_event(principal_id, permission_name, event_params={})
             res['processed'] += 1
         return res
 
@@ -314,7 +350,6 @@ class CloudCredentialsReport(object):
         """
         Post process the events data.
         """
-
         # Discover identity which created another identity
         for principal_id in self.events.iam_events:
             if 'creates' in self.events.iam_events[principal_id]:
@@ -355,6 +390,9 @@ class CloudCredentialsReport(object):
         return
 
     def save(self):
+        """
+        Save the processed events and file status.
+        """
         self.apply_filters()
 
         file = f"{self.output_dir}/events.json"
@@ -370,9 +408,21 @@ class CloudCredentialsReport(object):
 
 class CloudCredentialsRequests(CloudCredentialsReport):
     """
-    Compare the IAM events with the CredentialsRequests to identify the missing permissions.
+    The `CloudCredentialsRequests` class is a subclass of `CloudCredentialsReport` that adds
+    functionality to compare the IAM events with the CredentialsRequests and identify the missing
+    permissions. It has methods to load the IAM events and CredentialsRequests, compare the events,
+    and save the results to files.
     """
     def __init__(self, output_dir, credentials_requests_path, filters=None, args=None):
+        """
+        Initialize the CloudCredentialsReport object.
+
+        Parameters:
+        output_dir (str): Path to the output directory.
+        filters (dict): Filters to apply to the events data.
+        args (argparse.Namespace): Command line arguments.
+        """
+
         super().__init__(output_dir, filters, args=args)
         self.credentials_requests_path = credentials_requests_path
         self.credentials_requests = {}
@@ -581,12 +631,17 @@ class CloudCredentialsRequests(CloudCredentialsReport):
             if ('diff' not in self.compiled_users['users'][principal]) or ('requested' not in self.compiled_users['users'][principal]):
                 continue
             for action in self.compiled_users['users'][principal]['required']:
+                missing = False
                 if action not in self.compiled_users['users'][principal]['requested']:
+                    missing = True
                     self.compiled_users['users'][principal]['diff']['missing'].append(action)
 
                 # check if the action has case issues
                 # TODO improve the lookup
                 for action_req in self.compiled_users['users'][principal]['requested']:
+                    # perform additional checks only if permissions is missing
+                    if not missing:
+                        continue
                     if action_req.lower() == action.lower():
                         if 'alert_similar' not in self.compiled_users['users'][principal]['diff']:
                             self.compiled_users['users'][principal]['diff']['alert_similar'] = []
@@ -650,4 +705,9 @@ def main():
 
 
 if __name__ == '__main__':
+    """
+    The `main` function is the entry point of the script and is responsible for parsing
+    the command line arguments, creating the appropriate object, and executing the desired
+    command.
+    """
     main()
